@@ -1,129 +1,88 @@
-# Tema 1 RL: Switch
+# Layer 2 Virtual Switch Implementation
 
-*cerinte rezolvate: 1, 2, 3*
+## Overview
 
-## Learning
+This project implements a software-based Layer 2 network switch. The system provides core switching functionalities, including dynamic MAC address learning, Virtual Local Area Network (VLAN) isolation, and loop prevention via the Spanning Tree Protocol (STP).
 
-Am reprezentat tabela CAM sub forma unui dictionar (hashmap), folosind
-algoritmul dat in enunt, dar simplificat. In loc sa verific daca andresa mac
-destinatie este unicast si apoi separat daca aceasta este prezenta in tabela
-CAM, verific doar daca adresa destinatie este in tabela sau nu. In plus cand
-fac adaugarile in tabela CAM am grija sa inserez doar adrese mac unicast.
+## System Specifications & Features
 
-### Exemplu
+### 1. MAC Address Learning
 
-![ex1](./ex1.png)
+The Content-Addressable Memory (CAM) table is implemented as a highly efficient hashmap (dictionary) to track network topology.
 
-Host0 poate sa comunice cu Host2 asta inseamna ca:
+**Implementation Details:**
 
-- frame-urile sunt trimise in retea
-- switch-urile nu fac broadcast la fiecare cadru, adica tabelele CAM
-  functioneaza si retin adresele sursa 
+* The learning algorithm bypasses redundant checks by verifying the presence of a destination address directly in the CAM table, rather than first checking if the MAC is a unicast address and then searching the table.
+* The system enforces strict insertion rules, ensuring that only unicast MAC addresses are recorded into the CAM table during the learning phase.
 
-**RUTA:** H0 --- SW0 --- SW1 --- H2 **RUTA:** H2 --- SW1 --- H3
+**Behavioral Example:**
+When `Host0` communicates with `Host2`:
 
-## VLAN
+* Frames are forwarded through the network.
+* Switches avoid broadcasting every frame once the CAM tables are populated with the respective source addresses.
 
-La acest exercitiu am fost nevoit sa parsez datele de configurare pentru
-switch-uri. De aici am extras tipul de port pentru fiecare interfata
-(access/trunk), date pe care le stochez intr-o lista pe fiecare router. In rest
-singurele reguli care se adauga, modifica functionalitatea de broadcast unde
-verificam daca sursa si destinatia au acelasi **VLAN_ID**. Verificarea
-*nibble-ului* se face doar daca adresa destinatie este in tabela CAM.
+* **Route 1:** `H0` --- `SW0` --- `SW1` --- `H2`
+* **Route 2:** `H2` --- `SW1` --- `H3`
 
-Initial nu am facut aceasta verificare a *nibble-ului* si am avut conectivitate
-intre mai multe dispozitive decat trebuie. Acest *nibble* mi se pare o problema
-deoarece, transmiterea corecta a acestuia tine de fiecare host in parte, deci
-el poate fi schimbat si reprezinta o vulnerabilitate. Ca eficientizare a
-algoritmului putem elimina acest nibble care reprezinta o vulnerabilitate.
+### 2. VLAN Support (Virtual Local Area Networks)
 
-### Exemplu
+The switch supports network segmentation through static VLAN configurations.
 
-![ex2](./ex2.png) ![ex2\_1](./ex2_1.png)
+**Implementation Details:**
 
-**RUTA:** H0 -1- SW0 -T- SW1 -1- H2<br> **RUTA:** H0 -1- SW0 -T- SW1 -1- H3<br>
-**RUTA:** H0 -1- SW0 -2- H1
+* **Configuration Parsing:** The system parses localized switch configuration files to extract the port type for each interface (Access or Trunk), storing this metadata in a dedicated list per switch.
+* **Broadcast Domain Isolation:** When forwarding broadcast traffic, the system validates that the source and destination belong to the same `VLAN_ID`.
+* **Nibble Verification:** A specific nibble check is performed only if the destination address is present in the CAM table.
+* *Security Note/Optimization:* Relying on the nibble for VLAN tagging at the host level introduces a potential vulnerability, as it can be altered by the end-user. A recommended architectural optimization would be to enforce VLAN tagging strictly at the switch ingress ports, disregarding host-generated nibbles.
 
-Host0 poate sa comunice cu Host2 dar nu cu Host3 din cauza *nibble-ului* care
-nu este egal, chiar daca toate trei statiile apartin aceluiasi VLAN. Host0 nu
-poate comunica cu Host1 pentru ca sunt in VLAN-uri diferite.
+**Behavioral Example:**
+`Host0` can communicate with `Host2` but not with `Host3` due to mismatched nibble values, even though all three stations technically belong to the same VLAN. `Host0` cannot communicate with `Host1` because they reside in entirely different VLANs.
 
-## STP
+* **Route:** `H0` -*(Access)*- `SW0` -*(Trunk)*- `SW1` -*(Access)*- `H2`
+* **Blocked Route:** `H0` -*(Access)*- `SW0` -*(Trunk)*- `SW1` -*(Access)*- `H3` (Nibble mismatch)
+* **Blocked Route:** `H0` -*(Access)*- `SW0` -*(Access)*- `H1` (VLAN mismatch)
 
-Pentru STP am creat doua threaduri: unul trimite mesaje HPDU, celalat mesaje
-PPDU, ambele la interval de o secunda. Initial toate switch-urile sunt
-root-bridge si trimit mesaje PPDU. Daca primesc un mesaj PPDU cu RBID (root
-bridge id) mai mic, ele se opresc din a mai transmite PPDU si doar fac forward
-la mesajele primite de la noul RBID. Intr-un vector pastram pentru fiecare
-interfata mesajul PPDU cu costul cel mai mic provenit de la RBID sub forma
-**<R, c, T, p, q>**, unde:
+### 3. Spanning Tree Protocol (STP)
 
-- R = BID-ul root-bridge-ului care a generat mesajul
-- c = costul de la R la nodul curent
-- T = BID-ul ultimei statii care a avut mesajul inainte sa ajunga la switch-ul
-  curent
-- p = interfata pe care T a trimis mesajul
-- q = interfata pe care swith-ul curent a primit mesajul
+To prevent broadcast storms and Layer 2 loops, a simplified Spanning Tree Protocol is implemented.
 
-Aplicam algoritmul si populam vectorul de porturi:
+**Implementation Details:**
 
-- c este minim => interfata este de tip *root-port*
-- T > BID switch => interfata este *designated-port*
-- T < BID switch => interfata este *blocked-port*
+* **Multi-threading:** The STP engine utilizes two separate threads per switch: one for transmitting HPDUs and another for PPDUs, both operating at 1-second intervals.
+* **Root Bridge Election:** Upon initialization, all switches assume the role of the Root Bridge (RB) and broadcast PPDUs. If a switch receives a PPDU with a lower Root Bridge ID (RBID), it yields its root status, ceases generating its own PPDUs, and begins forwarding the superior PPDUs.
+* **State Tracking:** Each interface maintains a vector storing the lowest-cost PPDU received, formatted as the tuple **`<R, c, T, p, q>`**:
+* `R` = BID of the Root Bridge that generated the message
+* `c` = Path cost from `R` to the current node
+* `T` = BID of the upstream switch that forwarded the message
+* `p` = Egress port of switch `T`
+* `q` = Ingress port on the current switch
 
-Daca acest pas s-a terminat cu succes, schimbam intrarile din vectorul
-PORT\_MODES din *"b"* in *"f"* semnificand ca porturile au trecut din Blocking
-in Forwarding.
 
-O optimizare a algoritmului ar fi: detectarea interfetelor la care nu sunt
-conecatate switch-uri prin primirea de HPDU sau PPDU de pe acea interfata.
+* **Port Role Resolution:**
+* If `c` is the minimum cost path to the root $\rightarrow$ The interface becomes a **Root Port**.
+* If `T > Current Switch BID` $\rightarrow$ The interface becomes a **Designated Port**.
+* If `T < Current Switch BID` $\rightarrow$ The interface becomes a **Blocked Port**.
 
-### Exemplu
 
-![ex3](./ex3.png)
+* **State Transition:** Upon successful role resolution, valid ports transition their internal `PORT_MODES` state from `"b"` (Blocking) to `"f"` (Forwarding).
+* *Future Optimization:* The algorithm could be optimized by automatically detecting edge ports (interfaces connected to end-hosts rather than other switches) by monitoring the absence of incoming HPDUs/PPDUs on those links.
 
-La pornirea tuturor celor 3 switch-uri observam ca nu se creeaza o bucla de
-cadre, iar pachetele ICMP trimise intre statii nu genereaza  flooding.
+**Behavioral Example:**
+When initializing a 3-switch ring topology, the STP algorithm successfully breaks the loop. ICMP packets exchanged between connected stations route normally without generating a broadcast storm.
 
-## Referinte
+---
 
-Pentru valorile din header-ul PPDU am folosit urmatoarele surse:
+## Technical References & Protocol Standards
 
-https://beta.computer-networking.info/syllabus/default/protocols/lan.html?highlight=spanning%20tree%20protocol#the-spanning-tree-protocol-802-1d
+The STP implementation adheres to standard IEEE 802.1D / RSTP parameter values:
 
-- de aici am preluat modul de stocare a PPDU-urilor si initial costul pentru
-  legatura de 100Mbps = 2e6
+* **Link Costs:** The path cost for a 100Mbps link is set to `19`.
+* **Multicast Address:** PPDUs are transmitted to the standard STP multicast address: `01:80:c2:00:00:00`.
+* **Timers (IEEE 802.1w / 802.1D compatible):**
+* *Bridge Hello Time:* 2.0 seconds
+* *Bridge Max Age:* 40.0 seconds
+* *Bridge Forward Delay:* 4.0 seconds
 
-https://ocw.cs.pub.ro/courses/_media/rl/courses/rl05-optimizare-lan-25-26.pdf
 
-- din curs am preluat corect costul legaturii de 100Mbps = 19
 
-https://www.quora.com/What-is-the-multicast-address-used-in-STP
-
-- de pe acest site am preluat adresa destinatie pentru PPDU 01:80:c2:00:00:00
-
-https://picture.iczhiku.com/resource/eetop/SyiGpsFWqELwKVnM.pdf
-
-*pagina 153, sectiunea 17.14, tabelul 17.1 - "RSTP Timer and Transmit Hold Count
-parameter values", randul 2 - "Bridge Hello Time (17.13.6)", coloana 2*: 2.0
-secunde - valoarea recomandata pentru Hello Time 
-
-*pagina 153, sectiunea 17.14, tabelul 17.1 - "RSTP Timer and Transmit Hold Count
-parameter values", randul 2 - "Bridge Max Age (17.13.8)", coloana 3*: 40.0
-secunde - valoarea maxima pentru Max Age
-
-*pagina 153, sectiunea 17.14, tabelul 17.1 - "RSTP Timer and Transmit Hold Count
-parameter values", randul 2 - "Bridge Forward Delay (17.13.5)", coloana 2*: 4.0
-secunde - valoarea minima pentru Forward Delay
-
-Includ si acest paragram de pe pagina 153, sectiunea 17.14, imediat dupa tabelul 17.1, in care se specifica faptul ca timpii pentru STP sunt identici ca cei pentru RSTP:
-
-"*The recommended values for Bridge Hello Time, Bridge Max Age, and Bridge Forward Delay are the same
-as those specified for STP in previous revisions of this standard. They have
-been retained to facilitate interoperability and integration of RSTP Bridges
-into networks that include legacy STP Bridges, to support migration of existing
-networks to RSTP.*"
-
-https://en.wikipedia.org/wiki/Spanning\_Tree\_Protocol
-
-- Configuration, Path to the root bridge, subpunctul 4, a doua bulina: formula pentru port id
+*(Note: IEEE standards specify that recommended timer values for RSTP are identical to legacy STP to facilitate backward compatibility and network migration).*
